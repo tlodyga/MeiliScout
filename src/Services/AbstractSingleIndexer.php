@@ -29,7 +29,7 @@ abstract class AbstractSingleIndexer
      *
      * @var Client
      */
-    protected Client $client;
+    protected ?Client $client;
 
     /**
      * Indexable instance for formatting data.
