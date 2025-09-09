@@ -262,13 +262,13 @@ class SingleIndexingServiceProvider extends ServiceProvider
      * This method re-indexes a term when its metadata is updated,
      * ensuring the search index reflects the latest meta values.
      *
-     * @param int $metaId The ID of the meta entry
+     * @param int|array $metaId The ID of the meta entry
      * @param int $termId The ID of the term
      * @param string $metaKey The meta key being updated
      * @param mixed $metaValue The new meta value
      * @return void
      */
-    public function handleTermMetaUpdate(int $metaId, int $termId, string $metaKey, mixed $metaValue): void
+    public function handleTermMetaUpdate(int|array $metaId, int $termId, string $metaKey, mixed $metaValue): void
     {
         $term = get_term($termId);
         
