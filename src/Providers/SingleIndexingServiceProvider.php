@@ -14,11 +14,11 @@ use function get_term;
 
 /**
  * Service provider for managing automatic single-item indexing operations.
- * 
+ *
  * This service provider registers WordPress hooks to automatically index
  * posts and taxonomy terms when they are created, updated, or deleted.
  * It ensures the search index stays synchronized with content changes.
- * 
+ *
  * @package Pollora\MeiliScout\Providers
  * @since 1.0.0
  */
@@ -68,13 +68,13 @@ class SingleIndexingServiceProvider extends ServiceProvider
     {
         // Hook for post saves (create and update)
         add_action('save_post', [$this, 'handlePostSave'], 10, 3);
-        
+
         // Hook for post deletions
         add_action('delete_post', [$this, 'handlePostDelete'], 10, 1);
-        
+
         // Hook for post status transitions
         add_action('transition_post_status', [$this, 'handlePostStatusChange'], 10, 3);
-        
+
         // Hook for post meta updates (for indexed meta fields)
         add_action('updated_post_meta', [$this, 'handlePostMetaUpdate'], 10, 4);
         add_action('added_post_meta', [$this, 'handlePostMetaUpdate'], 10, 4);
@@ -94,10 +94,10 @@ class SingleIndexingServiceProvider extends ServiceProvider
         // Hook for term creation and updates
         add_action('created_term', [$this, 'handleTermSave'], 10, 3);
         add_action('edited_term', [$this, 'handleTermSave'], 10, 3);
-        
-        // Hook for term deletions  
+
+        // Hook for term deletions
         add_action('delete_term', [$this, 'handleTermDelete'], 10, 4);
-        
+
         // Hook for term meta updates
         add_action('updated_term_meta', [$this, 'handleTermMetaUpdate'], 10, 4);
         add_action('added_term_meta', [$this, 'handleTermMetaUpdate'], 10, 4);
@@ -181,16 +181,16 @@ class SingleIndexingServiceProvider extends ServiceProvider
      * This method re-indexes a post when its metadata is updated,
      * ensuring the search index reflects the latest meta values.
      *
-     * @param int $metaId The ID of the meta entry
+     * @param int|array $metaId The ID of the meta entry
      * @param int $postId The ID of the post
      * @param string $metaKey The meta key being updated
      * @param mixed $metaValue The new meta value
      * @return void
      */
-    public function handlePostMetaUpdate(int $metaId, int $postId, string $metaKey, mixed $metaValue): void
+    public function handlePostMetaUpdate(int|array $metaId, int $postId, string $metaKey, mixed $metaValue): void
     {
         $post = get_post($postId);
-        
+
         if (!$post instanceof \WP_Post || $this->shouldSkipPostOperation($postId, $post)) {
             return;
         }
@@ -219,7 +219,7 @@ class SingleIndexingServiceProvider extends ServiceProvider
     {
         try {
             $result = $this->taxonomyIndexer->indexTerm($termId);
-            
+
             // If the term was successfully indexed, also re-index associated posts
             if ($result) {
                 $this->postIndexer->reindexPostsForTerm($termId, $taxonomy);
@@ -247,7 +247,7 @@ class SingleIndexingServiceProvider extends ServiceProvider
         try {
             // Remove the term from the index
             $this->taxonomyIndexer->removeTerm($termId);
-            
+
             // Re-index posts that had this term to update their term data
             $this->postIndexer->reindexPostsForTerm($termId, $taxonomy);
         } catch (\Exception $e) {
@@ -271,7 +271,7 @@ class SingleIndexingServiceProvider extends ServiceProvider
     public function handleTermMetaUpdate(int|array $metaId, int $termId, string $metaKey, mixed $metaValue): void
     {
         $term = get_term($termId);
-        
+
         if (!$term instanceof \WP_Term || is_wp_error($term)) {
             return;
         }
