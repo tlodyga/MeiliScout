@@ -64,16 +64,31 @@ class PostIndexable implements Indexable
         $postTypes = Settings::get('indexed_post_types', []);
         $this->metaKeys = $this->gatherMetaKeys($postTypes);
 
-        foreach ($postTypes as $postType) {
-            $posts = get_posts([
-                'post_type' => $postType,
-                'posts_per_page' => -1,
-                'post_status' => 'any',
-            ]);
+        $postsPerPage = Settings::get('indexing.posts_per_page', 200);
 
-            foreach ($posts as $post) {
-                yield $post;
-            }
+        foreach ($postTypes as $postType) {
+            $page = 1;
+
+            do {
+                $posts = get_posts([
+                    'post_type' => $postType,
+                    'posts_per_page' => $postsPerPage,
+                    'paged' => $page,
+                    'post_status' => 'any',
+                    'orderby' => 'ID',
+                    'order' => 'ASC',
+                    'suppress_filters' => true,
+                ]);
+
+                foreach ($posts as $post) {
+                    yield $post;
+                }
+
+                $page++;
+
+                wp_cache_flush();
+
+            } while (count($posts) === $postsPerPage);
         }
     }
 
