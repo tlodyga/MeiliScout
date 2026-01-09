@@ -33,7 +33,13 @@ class DateQueryBuilder extends AbstractFilterBuilder
             return '';
         }
 
-        $key = "date.{$query['column']}";
+        $column = $query['column'];
+        if (str_contains($column, '.') || str_ends_with($column, '_timestamp')) {
+            $key = $column;
+        } else {
+            $key = "date.{$column}";
+        }
+
         $value = is_array($query['value']) ? $this->formatArrayValues($query['value']) : $this->formatValue($query['value']);
 
         /** @var ComparisonOperator $operator */

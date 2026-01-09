@@ -125,7 +125,7 @@ class PostIndexable implements Indexable
         $document['terms'] = $this->getFlattenedTerms($item);
         $document['metas'] = $this->getMetaData($item);
 
-        return $document;
+        return apply_filters('meiliscout/post/document', $document, $item);
     }
 
     public function formatForSearch(array $hit): mixed
