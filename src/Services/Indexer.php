@@ -38,11 +38,6 @@ class Indexer
     private Client $client;
 
     /**
-     * Log of indexing operations.
-     */
-    private array $indexingLog = [];
-
-    /**
      * List of post meta keys to index.
      */
     private array $postMetaKeys = [];
@@ -53,16 +48,6 @@ class Indexer
     private array $termMetaKeys = [];
 
     private array $indexables;
-
-    /**
-     * Counter for log operations to enable batched saves.
-     */
-    private int $logCounter = 0;
-
-    /**
-     * Number of log entries between saves.
-     */
-    private int $logSaveInterval = 5;
 
     /**
      * Batch size for bulk indexing operations.
@@ -86,6 +71,11 @@ class Indexer
     private TaxonomySingleIndexer $taxonomySingleIndexer;
 
     /**
+     * Logger instance for secure file-based logging.
+     */
+    private IndexingLogger $logger;
+
+    /**
      * Creates a new Indexer instance.
      */
     public function __construct()
@@ -97,6 +87,7 @@ class Indexer
         ];
         $this->postSingleIndexer = new PostSingleIndexer();
         $this->taxonomySingleIndexer = new TaxonomySingleIndexer();
+        $this->logger = IndexingLogger::getInstance();
     }
 
     /**
@@ -172,12 +163,12 @@ class Indexer
             }
 
             $this->log('success', 'Indexing completed successfully', true);
+            $this->logger->complete('completed');
         } catch (\Exception $e) {
             $this->log('error', 'Error during indexing: ' . $e->getMessage(), true);
+            $this->logger->complete('error');
             throw $e;
         }
-
-        $this->flushLog();
     }
 
     /**
@@ -664,63 +655,57 @@ class Indexer
         return $result;
     }
 
-    public function initializeLog(): void
+    /**
+     * Initializes a new logging session.
+     *
+     * @return string The session token for accessing logs
+     */
+    public function initializeLog(): string
     {
-        $this->indexingLog = [
-            'start_time' => current_time('mysql'),
-            'status' => 'pending',
-            'entries' => [],
-        ];
-        $this->logCounter = 0;
-
-        update_option('meiliscout/last_indexing_log', $this->indexingLog);
+        return $this->logger->initializeSession();
     }
 
     /**
-     * Logs an indexing operation with optional batched saves.
+     * Logs an indexing operation.
      *
      * @param string $type The log entry type
      * @param string $message The log message
-     * @param bool $forceSave Force immediate save to database
+     * @param bool $forceFlush Force immediate write to file
      */
-    public function log(string $type, string $message, bool $forceSave = false): void
+    public function log(string $type, string $message, bool $forceFlush = false): void
     {
-        $this->indexingLog['entries'][] = [
-            'type' => $type,
-            'message' => $message,
-            'time' => current_time('mysql'),
-        ];
-        $this->logCounter++;
-
-        // Batch saves: only save every N entries, on errors, or when forced
-        if ($forceSave || $type === 'error' || $this->logCounter >= $this->logSaveInterval) {
-            $this->saveLog();
-            $this->logCounter = 0;
-        }
+        $this->logger->log($type, $message, $forceFlush);
     }
 
     /**
-     * Flushes any pending log entries to the database.
+     * Gets the current session token.
+     *
+     * @return string|null The current token or null if no session
      */
-    public function flushLog(): void
+    public function getToken(): ?string
     {
-        if ($this->logCounter > 0) {
-            $this->saveLog();
-            $this->logCounter = 0;
-        }
+        return $this->logger->getToken();
     }
 
-    private function saveLog(): void
+    /**
+     * Gets the current log data.
+     *
+     * @return array<string, mixed>|null Log data or null if no active session
+     */
+    public function getCurrentLog(): ?array
     {
-        $this->indexingLog['end_time'] = current_time('mysql');
+        return $this->logger->getCurrentLog();
+    }
 
-        // Only set status to completed at the actual end of indexing
-        $lastEntry = end($this->indexingLog['entries']);
-        if ($lastEntry && $lastEntry['type'] === 'success' && str_contains($lastEntry['message'], 'completed')) {
-            $this->indexingLog['status'] = 'completed';
-        }
-
-        update_option('meiliscout/last_indexing_log', $this->indexingLog);
+    /**
+     * Gets log data by token.
+     *
+     * @param string $token The session token
+     * @return array<string, mixed>|null Log data or null if invalid/not found
+     */
+    public function getLogByToken(string $token): ?array
+    {
+        return $this->logger->getLogByToken($token);
     }
 
     /**
