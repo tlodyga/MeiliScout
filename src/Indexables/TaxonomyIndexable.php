@@ -8,9 +8,27 @@ use Pollora\MeiliScout\Config\Settings;
 use Pollora\MeiliScout\Contracts\Indexable;
 use WP_Term;
 
+use function get_term_link;
+use function get_term_meta;
+use function get_terms;
+use function maybe_unserialize;
+use function update_termmeta_cache;
+use function wp_cache_get;
+
 class TaxonomyIndexable implements Indexable
 {
     private array $metaKeys = [];
+
+    /**
+     * Preloaded meta cache indexed by term ID.
+     * @var array<int, array<string, mixed>>
+     */
+    private array $preloadedMeta = [];
+
+    /**
+     * Whether batch data has been preloaded.
+     */
+    private bool $batchPreloaded = false;
 
     public function getIndexName(): string
     {
@@ -71,6 +89,12 @@ class TaxonomyIndexable implements Indexable
 
     private function getMetaData(WP_Term $term): array
     {
+        // Use preloaded data if available (batch mode)
+        if ($this->batchPreloaded && isset($this->preloadedMeta[$term->term_id])) {
+            return $this->preloadedMeta[$term->term_id];
+        }
+
+        // Fallback to individual queries (single item mode)
         $meta = [];
         foreach ($this->metaKeys as $key) {
             $value = get_term_meta($term->term_id, $key, true);
@@ -121,5 +145,109 @@ class TaxonomyIndexable implements Indexable
             ";
             $this->metaKeys = $wpdb->get_col($query);
         }
+    }
+
+    /**
+     * Preloads batch data for multiple terms to avoid N+1 queries.
+     *
+     * This method should be called before formatting a batch of terms.
+     * It preloads all meta in bulk queries.
+     *
+     * @param WP_Term[] $terms Array of terms to preload data for
+     */
+    public function preloadBatchData(array $terms): void
+    {
+        if (empty($terms)) {
+            return;
+        }
+
+        $termIds = array_map(fn($term) => $term->term_id, $terms);
+        $taxonomies = array_unique(array_map(fn($term) => $term->taxonomy, $terms));
+
+        // Ensure meta keys are gathered
+        if (empty($this->metaKeys)) {
+            $this->gatherMetaKeys($taxonomies);
+        }
+
+        // Preload meta cache using WordPress core function
+        update_termmeta_cache($termIds);
+
+        // Build preloaded meta array from cache
+        $this->preloadedMeta = [];
+        foreach ($terms as $term) {
+            $this->preloadedMeta[$term->term_id] = $this->buildMetaFromCache($term->term_id);
+        }
+
+        $this->batchPreloaded = true;
+    }
+
+    /**
+     * Builds meta array from WordPress cache.
+     *
+     * @param int $termId The term ID
+     * @return array<string, mixed> Meta data array
+     */
+    private function buildMetaFromCache(int $termId): array
+    {
+        $meta = [];
+        $cachedMeta = wp_cache_get($termId, 'term_meta');
+
+        if ($cachedMeta === false) {
+            // Fallback to regular queries
+            foreach ($this->metaKeys as $key) {
+                $value = get_term_meta($termId, $key, true);
+                if ($value === '') {
+                    continue;
+                }
+                $indexKey = $this->normalizeMetaKey($key);
+                $meta[$key] = is_numeric($value) ? $value + 0 : $value;
+            }
+        } else {
+            foreach ($this->metaKeys as $key) {
+                if (! isset($cachedMeta[$key])) {
+                    continue;
+                }
+
+                $value = maybe_unserialize($cachedMeta[$key][0] ?? '');
+                if ($value === '') {
+                    continue;
+                }
+
+                $meta[$key] = is_numeric($value) ? $value + 0 : $value;
+            }
+        }
+
+        return $meta;
+    }
+
+    /**
+     * Clears the preloaded batch data.
+     *
+     * Call this after processing a batch to free memory.
+     */
+    public function clearBatchData(): void
+    {
+        $this->preloadedMeta = [];
+        $this->batchPreloaded = false;
+    }
+
+    /**
+     * Sets the meta keys to use for indexing.
+     *
+     * @param array $metaKeys Array of meta key names
+     */
+    public function setMetaKeys(array $metaKeys): void
+    {
+        $this->metaKeys = $metaKeys;
+    }
+
+    /**
+     * Gets the current meta keys.
+     *
+     * @return array Array of meta key names
+     */
+    public function getMetaKeys(): array
+    {
+        return $this->metaKeys;
     }
 }

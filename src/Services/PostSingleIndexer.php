@@ -262,10 +262,10 @@ class PostSingleIndexer extends AbstractSingleIndexer
     }
 
     /**
-     * Indexes multiple posts in batch.
+     * Indexes multiple posts in batch with optimized performance.
      *
-     * This method allows for efficient indexing of multiple posts at once,
-     * useful for bulk operations or when re-indexing related posts.
+     * This method uses bulk preloading and sends all documents to Meilisearch
+     * in a single API call for maximum efficiency.
      *
      * @param WP_Post[]|int[] $posts Array of post objects or post IDs
      * @return array{indexed: int, skipped: int, errors: int} Statistics about the batch operation
@@ -278,29 +278,85 @@ class PostSingleIndexer extends AbstractSingleIndexer
             'errors' => 0,
         ];
 
+        if (empty($posts)) {
+            return $statistics;
+        }
+
+        // Normalize all posts first
+        $normalizedPosts = [];
+        $postsToIndex = [];
+
         foreach ($posts as $post) {
-            try {
-                $result = $this->indexPost($post);
-                if ($result) {
-                    $postObject = $this->normalizePost($post);
-                    if ($postObject && $this->shouldIndex($postObject)) {
-                        $statistics['indexed']++;
-                    } else {
-                        $statistics['skipped']++;
-                    }
-                } else {
-                    $statistics['errors']++;
-                }
-            } catch (Exception $e) {
+            $postObject = $this->normalizePost($post);
+            if (! $postObject instanceof WP_Post) {
                 $statistics['errors']++;
-                $postId = $post instanceof WP_Post ? $post->ID : $post;
-                $this->logOperation('error', "Failed to index post {$postId}: " . $e->getMessage());
+                continue;
+            }
+
+            $normalizedPosts[] = $postObject;
+
+            // Check if should be indexed
+            if ($this->shouldIndex($postObject)) {
+                $postsToIndex[] = $postObject;
+            } else {
+                $statistics['skipped']++;
             }
         }
 
-        $total = $statistics['indexed'] + $statistics['skipped'] + $statistics['errors'];
-        $this->logOperation('info', "Batch indexing completed: {$total} posts processed ({$statistics['indexed']} indexed, {$statistics['skipped']} skipped, {$statistics['errors']} errors)");
+        if (empty($postsToIndex)) {
+            return $statistics;
+        }
+
+        try {
+            // Ensure index exists once for the entire batch
+            $this->ensureIndexExistsOnce();
+
+            // Get the indexable and preload all data in bulk
+            /** @var \Pollora\MeiliScout\Indexables\PostIndexable $indexable */
+            $indexable = $this->indexable;
+            $indexable->preloadBatchData($postsToIndex);
+
+            // Format all documents
+            $documents = [];
+            foreach ($postsToIndex as $post) {
+                try {
+                    $documents[] = $indexable->formatForIndexing($post);
+                } catch (Exception $e) {
+                    $statistics['errors']++;
+                    $this->logOperation('error', "Failed to format post {$post->ID}: " . $e->getMessage());
+                }
+            }
+
+            // Clear preloaded data to free memory
+            $indexable->clearBatchData();
+
+            // Send all documents in a single API call
+            if (! empty($documents)) {
+                $index = $this->client->index($indexable->getIndexName());
+                $index->addDocuments($documents);
+                $statistics['indexed'] = count($documents);
+            }
+
+        } catch (Exception $e) {
+            $statistics['errors'] += count($postsToIndex) - $statistics['indexed'];
+            $this->logOperation('error', "Batch indexing failed: " . $e->getMessage());
+        }
 
         return $statistics;
+    }
+
+    /**
+     * Ensures the index exists, but only checks once per session.
+     */
+    private bool $indexChecked = false;
+
+    private function ensureIndexExistsOnce(): void
+    {
+        if ($this->indexChecked) {
+            return;
+        }
+
+        $this->ensureIndexExists();
+        $this->indexChecked = true;
     }
 }

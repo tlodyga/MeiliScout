@@ -13,11 +13,33 @@ use function get_object_taxonomies;
 use function get_permalink;
 use function get_post_meta;
 use function get_posts;
+use function get_term;
+use function maybe_unserialize;
+use function update_meta_cache;
+use function update_object_term_cache;
+use function wp_cache_get;
 use function wp_get_post_terms;
 
 class PostIndexable implements Indexable
 {
     private array $metaKeys = [];
+
+    /**
+     * Preloaded terms cache indexed by post ID.
+     * @var array<int, array<array<string, mixed>>>
+     */
+    private array $preloadedTerms = [];
+
+    /**
+     * Preloaded meta cache indexed by post ID.
+     * @var array<int, array<string, mixed>>
+     */
+    private array $preloadedMeta = [];
+
+    /**
+     * Whether batch data has been preloaded.
+     */
+    private bool $batchPreloaded = false;
 
     public function getIndexName(): string
     {
@@ -113,6 +135,167 @@ class PostIndexable implements Indexable
         return $wpdb->get_col($query);
     }
 
+    /**
+     * Preloads batch data for multiple posts to avoid N+1 queries.
+     *
+     * This method should be called before formatting a batch of posts.
+     * It preloads all meta and terms in bulk queries.
+     *
+     * @param WP_Post[] $posts Array of posts to preload data for
+     */
+    public function preloadBatchData(array $posts): void
+    {
+        if (empty($posts)) {
+            return;
+        }
+
+        $postIds = array_map(fn($post) => $post->ID, $posts);
+        $postTypes = array_unique(array_map(fn($post) => $post->post_type, $posts));
+
+        // Ensure meta keys are gathered
+        if (empty($this->metaKeys)) {
+            $this->metaKeys = $this->gatherMetaKeys($postTypes);
+        }
+
+        // Preload meta cache using WordPress core function
+        update_meta_cache('post', $postIds);
+
+        // Preload terms cache using WordPress core function
+        update_object_term_cache($postIds, $postTypes);
+
+        // Build preloaded terms array from cache
+        $this->preloadedTerms = [];
+        foreach ($posts as $post) {
+            $this->preloadedTerms[$post->ID] = $this->buildTermsFromCache($post);
+        }
+
+        // Build preloaded meta array from cache
+        $this->preloadedMeta = [];
+        foreach ($posts as $post) {
+            $this->preloadedMeta[$post->ID] = $this->buildMetaFromCache($post->ID);
+        }
+
+        $this->batchPreloaded = true;
+    }
+
+    /**
+     * Builds terms array from WordPress cache.
+     *
+     * @param WP_Post $post The post
+     * @return array<array<string, mixed>> Flattened terms array
+     */
+    private function buildTermsFromCache(WP_Post $post): array
+    {
+        $terms = [];
+        $taxonomies = get_object_taxonomies($post->post_type);
+
+        foreach ($taxonomies as $taxonomy) {
+            // wp_get_object_terms uses cache when available
+            $cachedTerms = wp_cache_get($post->ID, "{$taxonomy}_relationships");
+
+            if ($cachedTerms === false) {
+                // Fallback to regular query if not in cache
+                $rawTerms = wp_get_post_terms($post->ID, $taxonomy);
+            } else {
+                // Get term objects from cached term IDs
+                $rawTerms = [];
+                foreach ((array) $cachedTerms as $termId) {
+                    $term = get_term($termId, $taxonomy);
+                    if ($term instanceof WP_Term) {
+                        $rawTerms[] = $term;
+                    }
+                }
+            }
+
+            foreach ($rawTerms as $term) {
+                if (! $term instanceof WP_Term) {
+                    continue;
+                }
+
+                $terms[] = [
+                    'term_id' => (int) $term->term_id,
+                    'name' => $term->name,
+                    'slug' => $term->slug,
+                    'taxonomy' => $term->taxonomy,
+                    'term_taxonomy_id' => (int) $term->term_taxonomy_id,
+                    'parent' => (int) $term->parent,
+                ];
+            }
+        }
+
+        return $terms;
+    }
+
+    /**
+     * Builds meta array from WordPress cache.
+     *
+     * @param int $postId The post ID
+     * @return array<string, mixed> Meta data array
+     */
+    private function buildMetaFromCache(int $postId): array
+    {
+        $meta = [];
+        $cachedMeta = wp_cache_get($postId, 'post_meta');
+
+        if ($cachedMeta === false) {
+            // Fallback to regular queries
+            foreach ($this->metaKeys as $key) {
+                $value = get_post_meta($postId, $key, true);
+                if ($value === '' || $value === null) {
+                    continue;
+                }
+                $meta[$key] = is_numeric($value) ? $value + 0 : $value;
+            }
+        } else {
+            foreach ($this->metaKeys as $key) {
+                if (! isset($cachedMeta[$key])) {
+                    continue;
+                }
+
+                $value = maybe_unserialize($cachedMeta[$key][0] ?? '');
+                if ($value === '' || $value === null) {
+                    continue;
+                }
+
+                $meta[$key] = is_numeric($value) ? $value + 0 : $value;
+            }
+        }
+
+        return $meta;
+    }
+
+    /**
+     * Clears the preloaded batch data.
+     *
+     * Call this after processing a batch to free memory.
+     */
+    public function clearBatchData(): void
+    {
+        $this->preloadedTerms = [];
+        $this->preloadedMeta = [];
+        $this->batchPreloaded = false;
+    }
+
+    /**
+     * Sets the meta keys to use for indexing.
+     *
+     * @param array $metaKeys Array of meta key names
+     */
+    public function setMetaKeys(array $metaKeys): void
+    {
+        $this->metaKeys = $metaKeys;
+    }
+
+    /**
+     * Gets the current meta keys.
+     *
+     * @return array Array of meta key names
+     */
+    public function getMetaKeys(): array
+    {
+        return $this->metaKeys;
+    }
+
     public function formatForIndexing(mixed $item): array
     {
         if (! $item instanceof WP_Post) {
@@ -135,6 +318,12 @@ class PostIndexable implements Indexable
 
     private function getFlattenedTerms(WP_Post $post): array
     {
+        // Use preloaded data if available (batch mode)
+        if ($this->batchPreloaded && isset($this->preloadedTerms[$post->ID])) {
+            return $this->preloadedTerms[$post->ID];
+        }
+
+        // Fallback to individual queries (single item mode)
         $terms = [];
         $taxonomies = get_object_taxonomies($post->post_type);
 
@@ -161,6 +350,12 @@ class PostIndexable implements Indexable
 
     private function getMetaData(WP_Post $post): array
     {
+        // Use preloaded data if available (batch mode)
+        if ($this->batchPreloaded && isset($this->preloadedMeta[$post->ID])) {
+            return $this->preloadedMeta[$post->ID];
+        }
+
+        // Fallback to individual queries (single item mode)
         $meta = [];
         foreach ($this->metaKeys as $key) {
             $value = get_post_meta($post->ID, $key, true);

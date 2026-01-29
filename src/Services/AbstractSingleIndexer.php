@@ -14,11 +14,11 @@ use function update_option;
 
 /**
  * Abstract base class for single-item indexing operations.
- * 
+ *
  * This abstract class provides common functionality for indexing individual items
  * in Meilisearch. It handles client initialization, index management, logging,
  * and provides template methods for specialized indexers to implement.
- * 
+ *
  * @package Pollora\MeiliScout\Services
  * @since 1.0.0
  */
@@ -51,6 +51,27 @@ abstract class AbstractSingleIndexer
      * @var string
      */
     protected string $logOptionKey;
+
+    /**
+     * Static cache of index existence checks to avoid repeated API calls.
+     *
+     * @var array<string, bool>
+     */
+    protected static array $indexExistsCache = [];
+
+    /**
+     * Counter for log operations to batch saves.
+     *
+     * @var int
+     */
+    protected int $logOperationCount = 0;
+
+    /**
+     * Number of operations between log saves for batch mode.
+     *
+     * @var int
+     */
+    protected int $logSaveInterval = 10;
 
     /**
      * Creates a new AbstractSingleIndexer instance.
@@ -127,7 +148,7 @@ abstract class AbstractSingleIndexer
      *
      * @param mixed $item The item to index
      * @return bool True if the item was successfully indexed, false otherwise
-     * 
+     *
      * @throws Exception If there's an error during the indexing process
      */
     public function indexItem(mixed $item): bool
@@ -153,7 +174,7 @@ abstract class AbstractSingleIndexer
             $itemName = $this->getItemName($item);
             $itemId = $this->getItemId($item);
             $this->logOperation('success', "Item '{$itemName}' (ID: {$itemId}) indexed successfully");
-            
+
             return true;
 
         } catch (Exception $e) {
@@ -203,9 +224,11 @@ abstract class AbstractSingleIndexer
             $settings = $this->indexable->getIndexSettings();
 
             // Check if index exists
-            if (!$this->indexExists($indexName)) {
+            if (! $this->indexExists($indexName)) {
                 // Create the index
                 $this->client->createIndex($indexName, ['primaryKey' => $primaryKey]);
+                // Update cache
+                $this->markIndexExists($indexName);
             }
 
             // Update settings (this is idempotent)
@@ -222,22 +245,56 @@ abstract class AbstractSingleIndexer
     /**
      * Checks if an index exists in Meilisearch.
      *
+     * Uses static caching to avoid repeated API calls across indexer instances.
+     *
      * @param string $indexName The name of the index
      * @return bool True if the index exists, false otherwise
      */
     protected function indexExists(string $indexName): bool
     {
+        // Check static cache first
+        if (isset(self::$indexExistsCache[$indexName])) {
+            return self::$indexExistsCache[$indexName];
+        }
+
         try {
             $indexes = $this->client->getIndexes();
             foreach ($indexes['results'] as $index) {
-                if ($index['uid'] === $indexName) {
-                    return true;
-                }
+                // Cache all found indexes
+                self::$indexExistsCache[$index['uid']] = true;
             }
-            return false;
+
+            // Cache the result for requested index
+            if (! isset(self::$indexExistsCache[$indexName])) {
+                self::$indexExistsCache[$indexName] = false;
+            }
+
+            return self::$indexExistsCache[$indexName];
         } catch (Exception) {
             return false;
         }
+    }
+
+    /**
+     * Marks an index as existing in the cache.
+     *
+     * Call this after creating an index to update the cache.
+     *
+     * @param string $indexName The name of the index
+     */
+    protected function markIndexExists(string $indexName): void
+    {
+        self::$indexExistsCache[$indexName] = true;
+    }
+
+    /**
+     * Clears the index existence cache.
+     *
+     * Call this if indexes might have been deleted externally.
+     */
+    public static function clearIndexCache(): void
+    {
+        self::$indexExistsCache = [];
     }
 
     /**
@@ -256,11 +313,14 @@ abstract class AbstractSingleIndexer
     /**
      * Logs a single indexing operation.
      *
+     * Uses batched saves to reduce database writes during bulk operations.
+     *
      * @param string $type The type of operation (info, success, error)
      * @param string $message The log message
+     * @param bool $forceSave Force immediate save to database
      * @return void
      */
-    protected function logOperation(string $type, string $message): void
+    protected function logOperation(string $type, string $message, bool $forceSave = false): void
     {
         $logEntry = [
             'type' => $type,
@@ -269,6 +329,7 @@ abstract class AbstractSingleIndexer
         ];
 
         $this->operationLog['operations'][] = $logEntry;
+        $this->logOperationCount++;
 
         // Also log errors to WordPress error log for debugging
         if ($type === 'error') {
@@ -276,8 +337,11 @@ abstract class AbstractSingleIndexer
             error_log("MeiliScout {$indexerType} Error: {$message}");
         }
 
-        // Save to WordPress options for debugging purposes
-        $this->saveOperationLog();
+        // Batch saves: only save every N operations, on errors, or when forced
+        if ($forceSave || $type === 'error' || $this->logOperationCount >= $this->logSaveInterval) {
+            $this->saveOperationLog();
+            $this->logOperationCount = 0;
+        }
     }
 
     /**
@@ -293,6 +357,21 @@ abstract class AbstractSingleIndexer
         }
 
         update_option($this->logOptionKey, $this->operationLog);
+    }
+
+    /**
+     * Flushes any pending log operations to the database.
+     *
+     * Call this at the end of batch operations to ensure all logs are saved.
+     *
+     * @return void
+     */
+    public function flushLogs(): void
+    {
+        if ($this->logOperationCount > 0) {
+            $this->saveOperationLog();
+            $this->logOperationCount = 0;
+        }
     }
 
     /**

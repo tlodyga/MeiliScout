@@ -53,7 +53,7 @@ class TaxonomySingleIndexer extends AbstractSingleIndexer
      *
      * This method verifies that the taxonomy is configured for indexing.
      *
-     * @param mixed $item The term to check (WP_Term object or term ID)
+     * @param int|WP_Term|array<string, mixed> $item The term to check (WP_Term object, term ID, or array)
      * @return bool True if the term should be indexed, false otherwise
      */
     protected function shouldIndex(mixed $item): bool
@@ -131,18 +131,29 @@ class TaxonomySingleIndexer extends AbstractSingleIndexer
     /**
      * Normalizes input to a WP_Term object.
      *
-     * @param int|WP_Term $term The term ID or WP_Term object
+     * @param int|WP_Term|array<string, mixed> $term The term ID, WP_Term object, or term array
      * @return WP_Term|null The WP_Term object or null if not found/error
      */
-    private function normalizeTerm(int|WP_Term $term): ?WP_Term
+    private function normalizeTerm(int|WP_Term|array $term): ?WP_Term
     {
         if ($term instanceof WP_Term) {
             return $term;
         }
 
+        // Handle array format (sometimes returned by get_terms)
+        if (is_array($term)) {
+            if (isset($term['term_id'])) {
+                $termObject = get_term((int) $term['term_id']);
+                if ($termObject instanceof WP_Term) {
+                    return $termObject;
+                }
+            }
+            return null;
+        }
+
         $termObject = get_term($term);
-        
-        if (is_wp_error($termObject) || !$termObject instanceof WP_Term) {
+
+        if (is_wp_error($termObject) || ! $termObject instanceof WP_Term) {
             return null;
         }
 
@@ -172,10 +183,10 @@ class TaxonomySingleIndexer extends AbstractSingleIndexer
     }
 
     /**
-     * Indexes multiple taxonomy terms in batch.
+     * Indexes multiple taxonomy terms in batch with optimized performance.
      *
-     * This method allows for efficient indexing of multiple terms at once,
-     * useful for bulk operations or when re-indexing terms of a specific taxonomy.
+     * This method uses bulk preloading and sends all documents to Meilisearch
+     * in a single API call for maximum efficiency.
      *
      * @param WP_Term[]|int[] $terms Array of term objects or term IDs
      * @return array{indexed: int, skipped: int, errors: int} Statistics about the batch operation
@@ -188,30 +199,83 @@ class TaxonomySingleIndexer extends AbstractSingleIndexer
             'errors' => 0,
         ];
 
+        if (empty($terms)) {
+            return $statistics;
+        }
+
+        // Normalize all terms first
+        $termsToIndex = [];
+
         foreach ($terms as $term) {
-            try {
-                $result = $this->indexTerm($term);
-                if ($result) {
-                    $termObject = $this->normalizeTerm($term);
-                    if ($termObject && $this->shouldIndex($termObject)) {
-                        $statistics['indexed']++;
-                    } else {
-                        $statistics['skipped']++;
-                    }
-                } else {
-                    $statistics['errors']++;
-                }
-            } catch (Exception $e) {
+            $termObject = $this->normalizeTerm($term);
+            if (! $termObject instanceof WP_Term) {
                 $statistics['errors']++;
-                $termId = $term instanceof WP_Term ? $term->term_id : $term;
-                $this->logOperation('error', "Failed to index term {$termId}: " . $e->getMessage());
+                continue;
+            }
+
+            // Check if should be indexed
+            if ($this->shouldIndex($termObject)) {
+                $termsToIndex[] = $termObject;
+            } else {
+                $statistics['skipped']++;
             }
         }
 
-        $total = $statistics['indexed'] + $statistics['skipped'] + $statistics['errors'];
-        $this->logOperation('info', "Batch indexing completed: {$total} terms processed ({$statistics['indexed']} indexed, {$statistics['skipped']} skipped, {$statistics['errors']} errors)");
+        if (empty($termsToIndex)) {
+            return $statistics;
+        }
+
+        try {
+            // Ensure index exists once for the entire batch
+            $this->ensureIndexExistsOnce();
+
+            // Get the indexable and preload all data in bulk
+            /** @var \Pollora\MeiliScout\Indexables\TaxonomyIndexable $indexable */
+            $indexable = $this->indexable;
+            $indexable->preloadBatchData($termsToIndex);
+
+            // Format all documents
+            $documents = [];
+            foreach ($termsToIndex as $term) {
+                try {
+                    $documents[] = $indexable->formatForIndexing($term);
+                } catch (Exception $e) {
+                    $statistics['errors']++;
+                    $this->logOperation('error', "Failed to format term {$term->term_id}: " . $e->getMessage());
+                }
+            }
+
+            // Clear preloaded data to free memory
+            $indexable->clearBatchData();
+
+            // Send all documents in a single API call
+            if (! empty($documents)) {
+                $index = $this->client->index($indexable->getIndexName());
+                $index->addDocuments($documents);
+                $statistics['indexed'] = count($documents);
+            }
+
+        } catch (Exception $e) {
+            $statistics['errors'] += count($termsToIndex) - $statistics['indexed'];
+            $this->logOperation('error', "Batch indexing failed: " . $e->getMessage());
+        }
 
         return $statistics;
+    }
+
+    /**
+     * Ensures the index exists, but only checks once per session.
+     */
+    private bool $indexChecked = false;
+
+    private function ensureIndexExistsOnce(): void
+    {
+        if ($this->indexChecked) {
+            return;
+        }
+
+        $this->ensureIndexExists();
+        $this->indexChecked = true;
     }
 
     /**

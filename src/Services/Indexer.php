@@ -55,6 +55,27 @@ class Indexer
     private array $indexables;
 
     /**
+     * Counter for log operations to enable batched saves.
+     */
+    private int $logCounter = 0;
+
+    /**
+     * Number of log entries between saves.
+     */
+    private int $logSaveInterval = 5;
+
+    /**
+     * Batch size for bulk indexing operations.
+     * Larger batches are more efficient for Meilisearch.
+     */
+    private int $bulkBatchSize = 500;
+
+    /**
+     * Cache for index existence checks.
+     */
+    private array $indexExistsCache = [];
+
+    /**
      * Post single indexer instance for individual post operations.
      */
     private PostSingleIndexer $postSingleIndexer;
@@ -98,6 +119,8 @@ class Indexer
                 // Index configuration
                 if ($clearIndices) {
                     $this->client->deleteIndex($indexName);
+                    // Clear cache since we deleted the index
+                    unset($this->indexExistsCache[$indexName]);
                 }
 
                 // Create index with primary key
@@ -105,26 +128,31 @@ class Indexer
                     $this->client->createIndex($indexName, [
                         'primaryKey' => $indexable->getPrimaryKey(),
                     ]);
+                    // Update cache
+                    $this->indexExistsCache[$indexName] = true;
                 }
 
                 $index = $this->client->index($indexName);
                 $index->updateSettings($indexable->getIndexSettings());
 
-                // Document indexing
-                $documents = [];
+                // Document indexing with optimized batch size
                 $totalIndexed = 0;
-                $batchSize = 100;
+                $batchSize = $this->bulkBatchSize;
 
                 // Use single indexers for consistency and shared logic
                 $items = [];
                 foreach ($indexable->getItems() as $item) {
                     $items[] = $item;
-                    
+
                     if (count($items) >= $batchSize) {
                         $batchStats = $this->indexItemsBatch($indexable, $items);
                         $totalIndexed += $batchStats['indexed'];
-                        $this->log('info', sprintf('Batch of %d items processed (%d indexed, %d skipped)', 
-                            count($items), $batchStats['indexed'], $batchStats['skipped']));
+                        $this->log('info', sprintf(
+                            'Batch of %d items processed (%d indexed, %d skipped)',
+                            count($items),
+                            $batchStats['indexed'],
+                            $batchStats['skipped']
+                        ));
                         $items = [];
                     }
                 }
@@ -132,20 +160,24 @@ class Indexer
                 if (! empty($items)) {
                     $batchStats = $this->indexItemsBatch($indexable, $items);
                     $totalIndexed += $batchStats['indexed'];
-                    $this->log('info', sprintf('Last batch of %d items processed (%d indexed, %d skipped)', 
-                        count($items), $batchStats['indexed'], $batchStats['skipped']));
+                    $this->log('info', sprintf(
+                        'Last batch of %d items processed (%d indexed, %d skipped)',
+                        count($items),
+                        $batchStats['indexed'],
+                        $batchStats['skipped']
+                    ));
                 }
 
                 $this->log('success', sprintf('Total of %d items indexed for %s', $totalIndexed, $indexName));
             }
 
-            $this->log('success', 'Indexing completed successfully');
+            $this->log('success', 'Indexing completed successfully', true);
         } catch (\Exception $e) {
-            $this->log('error', 'Error during indexing: '.$e->getMessage());
+            $this->log('error', 'Error during indexing: ' . $e->getMessage(), true);
             throw $e;
         }
 
-        $this->saveLog();
+        $this->flushLog();
     }
 
     /**
@@ -639,18 +671,43 @@ class Indexer
             'status' => 'pending',
             'entries' => [],
         ];
+        $this->logCounter = 0;
 
         update_option('meiliscout/last_indexing_log', $this->indexingLog);
     }
 
-    public function log(string $type, string $message): void
+    /**
+     * Logs an indexing operation with optional batched saves.
+     *
+     * @param string $type The log entry type
+     * @param string $message The log message
+     * @param bool $forceSave Force immediate save to database
+     */
+    public function log(string $type, string $message, bool $forceSave = false): void
     {
         $this->indexingLog['entries'][] = [
             'type' => $type,
             'message' => $message,
             'time' => current_time('mysql'),
         ];
-        $this->saveLog();
+        $this->logCounter++;
+
+        // Batch saves: only save every N entries, on errors, or when forced
+        if ($forceSave || $type === 'error' || $this->logCounter >= $this->logSaveInterval) {
+            $this->saveLog();
+            $this->logCounter = 0;
+        }
+    }
+
+    /**
+     * Flushes any pending log entries to the database.
+     */
+    public function flushLog(): void
+    {
+        if ($this->logCounter > 0) {
+            $this->saveLog();
+            $this->logCounter = 0;
+        }
     }
 
     private function saveLog(): void
@@ -658,8 +715,8 @@ class Indexer
         $this->indexingLog['end_time'] = current_time('mysql');
 
         // Only set status to completed at the actual end of indexing
-        if ($this->indexingLog['entries'][count($this->indexingLog['entries']) - 1]['type'] === 'success'
-            && strpos($this->indexingLog['entries'][count($this->indexingLog['entries']) - 1]['message'], 'completed') !== false) {
+        $lastEntry = end($this->indexingLog['entries']);
+        if ($lastEntry && $lastEntry['type'] === 'success' && str_contains($lastEntry['message'], 'completed')) {
             $this->indexingLog['status'] = 'completed';
         }
 
@@ -669,21 +726,43 @@ class Indexer
     /**
      * Checks if an index exists in Meilisearch.
      *
+     * Uses caching to avoid repeated API calls.
+     *
      * @param string $indexName The index name
      * @return bool True if the index exists, false otherwise
      */
     private function indexExists(string $indexName): bool
     {
+        // Check cache first
+        if (isset($this->indexExistsCache[$indexName])) {
+            return $this->indexExistsCache[$indexName];
+        }
+
         try {
             $indexes = $this->client->getIndexes();
             foreach ($indexes['results'] as $index) {
-                if ($index['uid'] === $indexName) {
-                    return true;
-                }
+                // Cache all found indexes
+                $this->indexExistsCache[$index['uid']] = true;
             }
-            return false;
+
+            // Cache result for requested index
+            if (! isset($this->indexExistsCache[$indexName])) {
+                $this->indexExistsCache[$indexName] = false;
+            }
+
+            return $this->indexExistsCache[$indexName];
         } catch (\Exception) {
             return false;
         }
+    }
+
+    /**
+     * Clears the index existence cache.
+     *
+     * Call this when clearing/deleting indexes.
+     */
+    public function clearIndexCache(): void
+    {
+        $this->indexExistsCache = [];
     }
 }
