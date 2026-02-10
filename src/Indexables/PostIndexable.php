@@ -75,6 +75,7 @@ class PostIndexable implements Indexable
         return [
             'filterableAttributes' => array_unique($filterableAttributes),
             'sortableAttributes' => array_unique([
+                'post_title',
                 'post_date',
                 ...array_map(fn($key) => "metas.{$key}", $filterableMetaKeys),
             ]),
