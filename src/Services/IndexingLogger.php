@@ -285,8 +285,9 @@ class IndexingLogger
     private function getLogDirectory(): string
     {
         $uploadDir = wp_upload_dir();
+        $defaultDir = $uploadDir['basedir'] . '/meiliscout/logs';
 
-        return $uploadDir['basedir'] . '/meiliscout/logs';
+        return apply_filters('meiliscout/log_directory', $defaultDir);
     }
 
     /**

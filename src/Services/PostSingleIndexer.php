@@ -311,10 +311,9 @@ class PostSingleIndexer extends AbstractSingleIndexer
             // Ensure index exists once for the entire batch
             $this->ensureIndexExistsOnce();
 
-            // Get the indexable and preload all data in bulk
+            // Get the indexable
             /** @var \Pollora\MeiliScout\Indexables\PostIndexable $indexable */
             $indexable = $this->indexable;
-            $indexable->preloadBatchData($postsToIndex);
 
             // Format all documents
             $documents = [];
@@ -327,15 +326,16 @@ class PostSingleIndexer extends AbstractSingleIndexer
                 }
             }
 
-            // Clear preloaded data to free memory
-            $indexable->clearBatchData();
-
             // Send all documents in a single API call
             if (! empty($documents)) {
                 $index = $this->client->index($indexable->getIndexName());
                 $index->addDocuments($documents);
                 $statistics['indexed'] = count($documents);
             }
+
+            // Aggressive memory cleanup after batch
+            unset($documents, $postsToIndex);
+            gc_collect_cycles();
 
         } catch (Exception $e) {
             $statistics['errors'] += count($postsToIndex) - $statistics['indexed'];
