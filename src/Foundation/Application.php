@@ -9,12 +9,9 @@ use Pollora\MeiliScout\Providers\Admin\IndexationServiceProvider;
 use Pollora\MeiliScout\Providers\Admin\SettingsServiceProvider;
 use Pollora\MeiliScout\Providers\ApiServiceProvider;
 use Pollora\MeiliScout\Providers\AssetsServiceProvider;
-use Pollora\MeiliScout\Providers\BlockRendererServiceProvider;
-use Pollora\MeiliScout\Providers\BlockServiceProvider;
 use Pollora\MeiliScout\Providers\CommandServiceProvider;
 use Pollora\MeiliScout\Providers\MeiliScoutServiceProvider;
 use Pollora\MeiliScout\Providers\QueryServiceProvider;
-use Pollora\MeiliScout\Providers\RestApiServiceProvider;
 use Pollora\MeiliScout\Providers\SingleIndexingServiceProvider;
 
 /**
@@ -28,9 +25,6 @@ class Application
      * @var array<class-string>
      */
     protected array $providers = [
-        BlockRendererServiceProvider::class,
-        BlockServiceProvider::class,
-        RestApiServiceProvider::class,
         MeiliScoutServiceProvider::class,
         ApiServiceProvider::class,
         AssetsServiceProvider::class,

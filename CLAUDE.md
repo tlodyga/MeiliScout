@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development Commands
 
-### Frontend Development
+### Admin Assets Development
 ```bash
 # Start development server with hot reload
 npm run start
@@ -49,9 +49,8 @@ ddev exec --dir /var/www/html/public/content/plugins/meiliscout composer test:ty
 
 ### Build System
 - Uses WordPress Scripts (@wordpress/scripts) for modern build pipeline
-- Webpack configuration extends WordPress defaults with custom entries
-- TailwindCSS integration via PostCSS
-- Automatic block.json and PHP file copying for Gutenberg blocks
+- Webpack configuration extends WordPress defaults for admin assets
+- TailwindCSS integration via PostCSS for admin UI
 
 ## Architecture Overview
 
@@ -81,25 +80,12 @@ ddev exec --dir /var/www/html/public/content/plugins/meiliscout composer test:ty
 - `TaxonomyIndexable`: Taxonomy indexing implementation
 - Implements `Indexable` contract for extensibility
 
-### Frontend Architecture
-
-#### AlpineJS Integration
-- **Reactive Components**: Uses AlpineJS for modern reactive UI
-- **Store Pattern**: Centralized state management with `MeiliscoutStore`
-- **Custom Prefix**: `x-meiliscout-` prefix to avoid conflicts
-- **Component Hierarchy**: `BaseFacet` → specialized facet types
-
-#### Facet System
-Located in `resources/assets/js/frontend/components/facets/`:
-- `BaseFacet`: Base functionality for all facets
-- Specialized facets: `ButtonFacet`, `CheckboxFacet`, `RadioFacet`, `RangeFacet`, `SelectFacet`
-- `FacetFactory`: Factory pattern for creating appropriate facet instances
-- `FacetManager`: Coordinates facet interactions
-
-#### Gutenberg Blocks
-- **Custom Blocks**: `query-loop` and `query-loop-facet` blocks
-- **React Components**: Modern React/JSX components in `resources/assets/js/gutenberg/`
-- **Server-Side Rendering**: PHP render functions for blocks
+#### Services (`src/Services/`)
+- `Indexer`: Main indexing service with bulk and chunked operations
+- `PostSingleIndexer`: Real-time single post indexing
+- `TaxonomySingleIndexer`: Real-time single taxonomy indexing
+- `AsyncIndexingQueue`: WP-Cron based async indexing queue (opt-in)
+- `IndexingLogger`: Secure file-based logging for indexation operations
 
 ### Configuration
 - **Config System**: `src/Config/Config.php` and `src/Config/Settings.php`
@@ -120,11 +106,10 @@ Located in `resources/assets/js/frontend/components/facets/`:
 - **Validators**: Type validation in `src/Domain/Search/Validators/`
 - **Service Providers**: Modular service registration pattern
 
-### Frontend Standards
-- **Component-Based**: Reusable Alpine.js components
-- **Asset Structure**: Separate CSS/JS for admin, editor, and frontend
+### Admin Assets
 - **Build Process**: Webpack with WordPress Scripts integration
 - **Modern CSS**: TailwindCSS with PostCSS processing
+- **Entry Point**: `resources/assets/main.js`
 
 ## Testing Strategy
 
@@ -151,12 +136,22 @@ Located in `resources/assets/js/frontend/components/facets/`:
 - `src/Query/QueryIntegration.php`: WordPress integration
 - `src/Query/Builders/`: Specialized query builders
 
-### Frontend
-- `resources/assets/js/frontend/stores/MeiliscoutStore.js`: Alpine.js store
-- `resources/assets/js/frontend/components/facets/`: Facet components
-- `resources/assets/js/gutenberg/blocks/`: Gutenberg block components
-
 ### Configuration
 - `config/meiliscout.php`: Plugin configuration
 - `webpack.config.js`: Build configuration
 - `composer.json`: PHP dependencies and autoloading
+
+## Available Filters
+
+The plugin provides several filters for customization:
+
+- `meiliscout/skip_indexing`: Disable indexing globally (useful during imports)
+- `meiliscout/indexables`: Customize or replace default indexables
+- `meiliscout/post_single_indexer`: Customize or replace the PostSingleIndexer
+- `meiliscout/bulk_batch_size`: Control batch size for bulk indexing (default: 500)
+- `meiliscout/log_directory`: Customize log directory path
+- `meiliscout/async_indexing_delay`: Delay before async queue processing (default: 300s)
+
+## Environment Variables
+
+- `MEILISCOUT_ASYNC_INDEXING`: Enable async indexing mode (`true`/`false`)
