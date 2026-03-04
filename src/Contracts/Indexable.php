@@ -23,8 +23,11 @@ interface Indexable
 
     /**
      * Retrieves the items to index.
+     *
+     * @param int|null $offset Optional starting offset
+     * @param int|null $limit Optional maximum number of items
      */
-    public function getItems(): iterable;
+    public function getItems(?int $offset = null, ?int $limit = null): iterable;
 
     /**
      * Formats an item for indexing.

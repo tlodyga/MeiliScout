@@ -49,21 +49,60 @@ class TaxonomyIndexable implements Indexable
         ];
     }
 
-    public function getItems(): iterable
+    public function getItems(?int $offset = null, ?int $limit = null): iterable
     {
         $taxonomies = Settings::get('indexed_taxonomies', []);
-        $this->gatherMetaKeys($taxonomies);
+
+        // Fallback intelligent: use configured meta keys if set, otherwise gather from DB
+        $configuredMetaKeys = Settings::get('indexed_meta_keys', []);
+        $this->metaKeys = !empty($configuredMetaKeys)
+            ? $configuredMetaKeys
+            : $this->gatherMetaKeysFromTaxonomies($taxonomies);
+
+        $totalYielded = 0;
+        $maxItems = $limit ?? PHP_INT_MAX;
 
         foreach ($taxonomies as $taxonomy) {
             $terms = get_terms([
                 'taxonomy' => $taxonomy,
                 'hide_empty' => false,
+                'offset' => $offset ?? 0,
+                'number' => $limit ?? 0, // 0 means no limit in get_terms
             ]);
 
             foreach ($terms as $term) {
+                // Stop if we've reached the limit
+                if ($totalYielded >= $maxItems) {
+                    return;
+                }
+
                 yield $term;
+                $totalYielded++;
             }
         }
+    }
+
+    /**
+     * Gathers meta keys from taxonomies (renamed to avoid conflict).
+     */
+    private function gatherMetaKeysFromTaxonomies(array $taxonomies): array
+    {
+        global $wpdb;
+
+        if (empty($taxonomies)) {
+            return [];
+        }
+
+        $escapedTaxonomies = array_map(fn($taxonomy) => esc_sql((string) $taxonomy), $taxonomies);
+        $taxonomiesStr = "'" . implode("','", $escapedTaxonomies) . "'";
+        $query = "
+            SELECT DISTINCT meta_key
+            FROM {$wpdb->termmeta} tm
+            JOIN {$wpdb->term_taxonomy} tt ON tt.term_id = tm.term_id
+            WHERE tt.taxonomy IN ({$taxonomiesStr})
+        ";
+
+        return $wpdb->get_col($query);
     }
 
     public function formatForIndexing(mixed $item): array
@@ -102,7 +141,8 @@ class TaxonomyIndexable implements Indexable
                 // Transform keys that start with underscore for Meilisearch
                 $indexKey = $this->normalizeMetaKey($key);
                 // Automatic casting of numeric values
-                if (is_numeric($value)) {
+                // Skip INF, -INF, and NAN values as they cannot be JSON encoded
+                if (is_numeric($value) && is_finite((float) $value)) {
                     $meta[$key] = $value + 0; // implicit cast to int or float
                 } else {
                     $meta[$key] = $value;
@@ -130,23 +170,6 @@ class TaxonomyIndexable implements Indexable
         return $key;
     }
 
-    private function gatherMetaKeys(array $taxonomies): void
-    {
-        global $wpdb;
-
-        if (! empty($taxonomies)) {
-            $escapedTaxonomies = array_map(fn($taxonomy) => esc_sql((string) $taxonomy), $taxonomies);
-            $taxonomiesStr = "'".implode("','", $escapedTaxonomies)."'";
-            $query = "
-                SELECT DISTINCT meta_key
-                FROM {$wpdb->termmeta} tm
-                JOIN {$wpdb->term_taxonomy} tt ON tt.term_id = tm.term_id
-                WHERE tt.taxonomy IN ({$taxonomiesStr})
-            ";
-            $this->metaKeys = $wpdb->get_col($query);
-        }
-    }
-
     /**
      * Preloads batch data for multiple terms to avoid N+1 queries.
      *
@@ -164,9 +187,12 @@ class TaxonomyIndexable implements Indexable
         $termIds = array_map(fn($term) => $term->term_id, $terms);
         $taxonomies = array_unique(array_map(fn($term) => $term->taxonomy, $terms));
 
-        // Ensure meta keys are gathered
+        // Ensure meta keys are set from settings or gathered from DB
         if (empty($this->metaKeys)) {
-            $this->gatherMetaKeys($taxonomies);
+            $configuredMetaKeys = Settings::get('indexed_meta_keys', []);
+            $this->metaKeys = !empty($configuredMetaKeys)
+                ? $configuredMetaKeys
+                : $this->gatherMetaKeysFromTaxonomies($taxonomies);
         }
 
         // Preload meta cache using WordPress core function
@@ -200,7 +226,8 @@ class TaxonomyIndexable implements Indexable
                     continue;
                 }
                 $indexKey = $this->normalizeMetaKey($key);
-                $meta[$key] = is_numeric($value) ? $value + 0 : $value;
+                // Skip INF, -INF, and NAN values as they cannot be JSON encoded
+                $meta[$key] = (is_numeric($value) && is_finite((float) $value)) ? $value + 0 : $value;
             }
         } else {
             foreach ($this->metaKeys as $key) {
@@ -213,7 +240,8 @@ class TaxonomyIndexable implements Indexable
                     continue;
                 }
 
-                $meta[$key] = is_numeric($value) ? $value + 0 : $value;
+                // Skip INF, -INF, and NAN values as they cannot be JSON encoded
+                $meta[$key] = (is_numeric($value) && is_finite((float) $value)) ? $value + 0 : $value;
             }
         }
 

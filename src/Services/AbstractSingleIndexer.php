@@ -259,9 +259,13 @@ abstract class AbstractSingleIndexer
 
         try {
             $indexes = $this->client->getIndexes();
-            foreach ($indexes['results'] as $index) {
-                // Cache all found indexes
-                self::$indexExistsCache[$index['uid']] = true;
+
+            // Handle case where results might be null
+            if (isset($indexes['results']) && is_array($indexes['results'])) {
+                foreach ($indexes['results'] as $index) {
+                    // Cache all found indexes
+                    self::$indexExistsCache[$index['uid']] = true;
+                }
             }
 
             // Cache the result for requested index
