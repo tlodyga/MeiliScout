@@ -1,7 +1,5 @@
 @import 'tailwindcss';
 
-@source "./..";
-
 .toggle-dot {
     transition: transform 0.2s ease;
 }
