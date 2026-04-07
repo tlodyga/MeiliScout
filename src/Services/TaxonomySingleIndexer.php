@@ -191,13 +191,17 @@ class TaxonomySingleIndexer extends AbstractSingleIndexer
      * @param WP_Term[]|int[] $terms Array of term objects or term IDs
      * @return array{indexed: int, skipped: int, errors: int} Statistics about the batch operation
      */
-    public function indexTerms(array $terms): array
+    public function indexTerms(array $terms, ?Indexable $indexable): array
     {
         $statistics = [
             'indexed' => 0,
             'skipped' => 0,
             'errors' => 0,
         ];
+
+        if ($indexable) {
+            $this->indexable = $indexable;
+        }
 
         if (empty($terms)) {
             return $statistics;

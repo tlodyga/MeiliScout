@@ -432,11 +432,11 @@ class Indexer
     private function indexItemsBatch(Indexable $indexable, array $items): array
     {
         if ($indexable instanceof PostIndexable) {
-            return $this->postSingleIndexer->indexPosts($items);
+            return $this->postSingleIndexer->indexPosts($items, $indexable);
         }
         
         if ($indexable instanceof TaxonomyIndexable) {
-            return $this->taxonomySingleIndexer->indexTerms($items);
+            return $this->taxonomySingleIndexer->indexTerms($items, $indexable);
         }
 
         // Fallback to old method for unknown indexable types

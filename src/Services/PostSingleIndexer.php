@@ -17,11 +17,11 @@ use function in_array;
 
 /**
  * Service for managing single post indexing operations in Meilisearch.
- * 
+ *
  * This service handles real-time indexing of individual WordPress posts
  * when they are created, updated, or deleted. It extends the abstract
  * single indexer to provide post-specific functionality.
- * 
+ *
  * @package Pollora\MeiliScout\Services
  * @since 1.0.0
  */
@@ -59,7 +59,7 @@ class PostSingleIndexer extends AbstractSingleIndexer
     protected function shouldIndex(mixed $item): bool
     {
         $post = $this->normalizePost($item);
-        
+
         if (!$post instanceof WP_Post) {
             return false;
         }
@@ -105,13 +105,13 @@ class PostSingleIndexer extends AbstractSingleIndexer
      *
      * @param int|WP_Post $post The post ID or WP_Post object to index
      * @return bool True if the post was successfully processed, false otherwise
-     * 
+     *
      * @throws Exception If there's an error during the indexing process
      */
     public function indexPost(int|WP_Post $post): bool
     {
         $postObject = $this->normalizePost($post);
-        
+
         if (!$postObject instanceof WP_Post) {
             $this->logOperation('error', "Post with ID {$post} not found");
             return false;
@@ -123,7 +123,7 @@ class PostSingleIndexer extends AbstractSingleIndexer
                 $this->logOperation('info', "Post type '{$postObject->post_type}' is not configured for indexing");
                 return true; // Not an error
             }
-            
+
             if (!$this->shouldIndexPostStatus($postObject->post_status)) {
                 // Remove from index if it exists there
                 return $this->removePost($postObject->ID);
@@ -270,8 +270,12 @@ class PostSingleIndexer extends AbstractSingleIndexer
      * @param WP_Post[]|int[] $posts Array of post objects or post IDs
      * @return array{indexed: int, skipped: int, errors: int} Statistics about the batch operation
      */
-    public function indexPosts(array $posts): array
+    public function indexPosts(array $posts, ?Indexable $indexable): array
     {
+        if ($indexable) {
+            $this->indexable = $indexable;
+        }
+
         $statistics = [
             'indexed' => 0,
             'skipped' => 0,
